@@ -1,0 +1,792 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>FBTC0 Bot - Web Dashboard</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+  :root {
+    --bg-primary: #0a0a0f;
+    --bg-secondary: #12121a;
+    --bg-card: #16161f;
+    --bg-card-hover: #1c1c28;
+    --bg-input: #1a1a25;
+    --border: #2a2a3a;
+    --border-active: #3a3a50;
+    --text-primary: #e8e8f0;
+    --text-secondary: #8888a0;
+    --text-muted: #555570;
+    --green: #00e676;
+    --green-dim: #00c864;
+    --green-bg: rgba(0,230,118,0.08);
+    --green-border: rgba(0,230,118,0.2);
+    --red: #ff5252;
+    --red-dim: #e04040;
+    --red-bg: rgba(255,82,82,0.08);
+    --red-border: rgba(255,82,82,0.2);
+    --yellow: #ffd740;
+    --yellow-dim: #e6c030;
+    --yellow-bg: rgba(255,215,64,0.08);
+    --yellow-border: rgba(255,215,64,0.2);
+    --blue: #448aff;
+    --blue-dim: #3670e0;
+    --blue-bg: rgba(68,138,255,0.08);
+    --blue-border: rgba(68,138,255,0.2);
+    --orange: #ff9100;
+    --purple: #b388ff;
+    --radius: 12px;
+    --radius-sm: 8px;
+    --radius-xs: 6px;
+    --shadow: 0 4px 24px rgba(0,0,0,0.3);
+    --shadow-sm: 0 2px 8px rgba(0,0,0,0.2);
+  }
+
+  * { margin:0; padding:0; box-sizing:border-box; }
+
+  body {
+    font-family: 'Inter', -apple-system, sans-serif;
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    min-height: 100vh;
+    overflow-x: hidden;
+  }
+
+  /* Background ambient */
+  body::before {
+    content: '';
+    position: fixed;
+    top: -50%; left: -50%;
+    width: 200%; height: 200%;
+    background: radial-gradient(ellipse at 20% 20%, rgba(0,230,118,0.03) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 80%, rgba(68,138,255,0.03) 0%, transparent 50%);
+    pointer-events: none; z-index: 0;
+  }
+
+  .app { position: relative; z-index: 1; max-width: 1200px; margin: 0 auto; padding: 20px; }
+
+  /* ========== HEADER ========== */
+  .header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 20px 0 24px; border-bottom: 1px solid var(--border);
+    margin-bottom: 24px; flex-wrap: wrap; gap: 16px;
+  }
+  .header-left { display: flex; align-items: center; gap: 14px; }
+  .logo {
+    width: 44px; height: 44px;
+    background: linear-gradient(135deg, #f7931a, #ffd740);
+    border-radius: 12px; display: flex; align-items: center; justify-content: center;
+    font-size: 22px; font-weight: 800; color: #0a0a0f;
+    box-shadow: 0 4px 16px rgba(247,147,26,0.25);
+  }
+  .header-title h1 { font-size: 22px; font-weight: 700; letter-spacing: -0.5px; }
+  .header-title p { font-size: 13px; color: var(--text-secondary); margin-top: 2px; }
+
+  .header-right { display: flex; align-items: center; gap: 10px; }
+  .ws-status {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12px; color: var(--text-secondary);
+    padding: 6px 12px; border-radius: 20px;
+    background: var(--bg-card); border: 1px solid var(--border);
+  }
+  .ws-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--red); transition: background 0.3s;
+  }
+  .ws-dot.connected { background: var(--green); box-shadow: 0 0 8px rgba(0,230,118,0.5); }
+
+  /* ========== STATS BAR ========== */
+  .stats-bar {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px;
+    margin-bottom: 24px;
+  }
+  .stat-card {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 18px 20px;
+    transition: border-color 0.2s, transform 0.2s;
+  }
+  .stat-card:hover { border-color: var(--border-active); transform: translateY(-1px); }
+  .stat-label { font-size: 12px; color: var(--text-secondary); font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; }
+  .stat-value { font-size: 28px; font-weight: 700; margin-top: 6px; font-family: 'JetBrains Mono', monospace; }
+  .stat-value.green { color: var(--green); }
+  .stat-value.red { color: var(--red); }
+  .stat-value.blue { color: var(--blue); }
+  .stat-value.yellow { color: var(--yellow); }
+
+  /* ========== ACTION BAR ========== */
+  .action-bar {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 24px; flex-wrap: wrap;
+  }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 10px 20px; border-radius: var(--radius-sm);
+    font-size: 14px; font-weight: 600; border: none; cursor: pointer;
+    transition: all 0.2s; font-family: inherit;
+    text-decoration: none;
+  }
+  .btn:active { transform: scale(0.97); }
+  .btn svg { width: 16px; height: 16px; }
+
+  .btn-primary {
+    background: var(--green); color: #0a0a0f;
+    box-shadow: 0 2px 12px rgba(0,230,118,0.25);
+  }
+  .btn-primary:hover { background: var(--green-dim); box-shadow: 0 4px 16px rgba(0,230,118,0.35); }
+
+  .btn-danger {
+    background: var(--red); color: #fff;
+    box-shadow: 0 2px 12px rgba(255,82,82,0.2);
+  }
+  .btn-danger:hover { background: var(--red-dim); }
+
+  .btn-secondary {
+    background: var(--bg-card); color: var(--text-primary);
+    border: 1px solid var(--border);
+  }
+  .btn-secondary:hover { background: var(--bg-card-hover); border-color: var(--border-active); }
+
+  .btn-blue {
+    background: var(--blue); color: #fff;
+    box-shadow: 0 2px 12px rgba(68,138,255,0.2);
+  }
+  .btn-blue:hover { background: var(--blue-dim); }
+
+  .btn-sm { padding: 6px 14px; font-size: 12px; }
+  .btn-icon { padding: 8px; width: 36px; height: 36px; justify-content: center; }
+
+  .btn-upload {
+    background: linear-gradient(135deg, #f7931a, #e8850f);
+    color: #0a0a0f;
+    box-shadow: 0 2px 12px rgba(247,147,26,0.3);
+  }
+  .btn-upload:hover { box-shadow: 0 4px 16px rgba(247,147,26,0.4); }
+
+  .spacer { flex: 1; }
+
+  /* ========== TABLE ========== */
+  .card {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: var(--radius); overflow: hidden; margin-bottom: 24px;
+  }
+  .card-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 16px 20px; border-bottom: 1px solid var(--border);
+  }
+  .card-header h2 { font-size: 15px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+  .card-header h2 span.count {
+    font-size: 11px; background: var(--bg-input); color: var(--text-secondary);
+    padding: 2px 8px; border-radius: 10px; font-weight: 500;
+  }
+
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    text-align: left; padding: 12px 20px; font-size: 11px;
+    font-weight: 600; color: var(--text-secondary); text-transform: uppercase;
+    letter-spacing: 0.5px; background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border);
+  }
+  td {
+    padding: 14px 20px; font-size: 14px; border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: var(--bg-card-hover); }
+
+  .account-name {
+    font-weight: 600; display: flex; align-items: center; gap: 10px;
+  }
+  .avatar {
+    width: 32px; height: 32px; border-radius: 8px;
+    background: linear-gradient(135deg, var(--blue), var(--purple));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 700; color: #fff; flex-shrink: 0;
+  }
+
+  .balance { font-family: 'JetBrains Mono', monospace; font-weight: 600; font-size: 14px; }
+  .balance span { color: var(--text-secondary); font-size: 11px; font-weight: 400; margin-left: 4px; }
+
+  /* Status badges */
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 12px; border-radius: 20px; font-size: 12px;
+    font-weight: 600; font-family: 'JetBrains Mono', monospace;
+  }
+  .badge-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+  }
+  .badge-green { background: var(--green-bg); color: var(--green); border: 1px solid var(--green-border); }
+  .badge-green .badge-dot { background: var(--green); }
+  .badge-red { background: var(--red-bg); color: var(--red); border: 1px solid var(--red-border); }
+  .badge-red .badge-dot { background: var(--red); }
+  .badge-yellow { background: var(--yellow-bg); color: var(--yellow); border: 1px solid var(--yellow-border); }
+  .badge-yellow .badge-dot { background: var(--yellow); }
+  .badge-blue { background: var(--blue-bg); color: var(--blue); border: 1px solid var(--blue-border); }
+  .badge-blue .badge-dot { background: var(--blue); }
+  .badge-idle { background: var(--bg-input); color: var(--text-secondary); border: 1px solid var(--border); }
+  .badge-idle .badge-dot { background: var(--text-secondary); }
+
+  .actions-cell { display: flex; gap: 6px; }
+
+  /* ========== LOG PANEL ========== */
+  .log-panel {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: var(--radius); overflow: hidden;
+  }
+  .log-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 20px; border-bottom: 1px solid var(--border);
+  }
+  .log-header h2 { font-size: 15px; font-weight: 600; }
+  .log-body {
+    padding: 12px 0; max-height: 300px; overflow-y: auto;
+    font-family: 'JetBrains Mono', monospace; font-size: 12px;
+  }
+  .log-body::-webkit-scrollbar { width: 6px; }
+  .log-body::-webkit-scrollbar-track { background: transparent; }
+  .log-body::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  .log-entry {
+    padding: 5px 20px; display: flex; gap: 12px;
+    transition: background 0.15s;
+  }
+  .log-entry:hover { background: var(--bg-card-hover); }
+  .log-time { color: var(--text-muted); flex-shrink: 0; min-width: 70px; }
+  .log-account { color: var(--blue); flex-shrink: 0; min-width: 100px; font-weight: 500; }
+  .log-msg { color: var(--text-secondary); }
+  .log-msg.ok { color: var(--green); }
+  .log-msg.fail { color: var(--red); }
+  .log-msg.warn { color: var(--yellow); }
+  .log-empty { text-align: center; padding: 40px; color: var(--text-muted); }
+
+  /* ========== EMPTY STATE ========== */
+  .empty-state {
+    text-align: center; padding: 60px 20px;
+  }
+  .empty-icon {
+    width: 80px; height: 80px; border-radius: 20px;
+    background: var(--bg-input); border: 2px dashed var(--border);
+    display: flex; align-items: center; justify-content: center;
+    margin: 0 auto 20px; font-size: 32px;
+  }
+  .empty-state h3 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
+  .empty-state p { color: var(--text-secondary); font-size: 14px; max-width: 400px; margin: 0 auto; }
+
+  /* ========== UPLOAD MODAL ========== */
+  .modal-overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.6);
+    backdrop-filter: blur(4px); z-index: 100;
+    display: none; align-items: center; justify-content: center;
+    padding: 20px;
+  }
+  .modal-overlay.active { display: flex; }
+  .modal {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 16px; padding: 28px; width: 100%; max-width: 480px;
+    box-shadow: var(--shadow);
+  }
+  .modal h2 { font-size: 18px; font-weight: 700; margin-bottom: 6px; }
+  .modal p { color: var(--text-secondary); font-size: 13px; margin-bottom: 20px; }
+
+  .upload-zone {
+    border: 2px dashed var(--border); border-radius: var(--radius);
+    padding: 40px 20px; text-align: center; cursor: pointer;
+    transition: all 0.2s; margin-bottom: 20px;
+  }
+  .upload-zone:hover, .upload-zone.dragover {
+    border-color: var(--green); background: var(--green-bg);
+  }
+  .upload-zone svg { margin-bottom: 12px; color: var(--text-secondary); }
+  .upload-zone p { margin-bottom: 4px; }
+  .upload-zone .hint { font-size: 12px; color: var(--text-muted); }
+  .upload-zone input { display: none; }
+
+  .modal-actions { display: flex; gap: 10px; justify-content: flex-end; }
+
+  /* ========== RENAME MODAL ========== */
+  .rename-input {
+    width: 100%; padding: 10px 14px; border-radius: var(--radius-xs);
+    background: var(--bg-input); border: 1px solid var(--border);
+    color: var(--text-primary); font-size: 14px; font-family: inherit;
+    outline: none; transition: border-color 0.2s;
+    margin-bottom: 20px;
+  }
+  .rename-input:focus { border-color: var(--green); }
+
+  /* ========== TOAST ========== */
+  .toast-container {
+    position: fixed; top: 20px; right: 20px; z-index: 200;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .toast {
+    padding: 12px 20px; border-radius: var(--radius-sm);
+    font-size: 13px; font-weight: 500;
+    background: var(--bg-card); border: 1px solid var(--border);
+    box-shadow: var(--shadow); animation: slideIn 0.3s ease;
+    max-width: 360px;
+  }
+  .toast.success { border-color: var(--green-border); color: var(--green); }
+  .toast.error { border-color: var(--red-border); color: var(--red); }
+
+  @keyframes slideIn {
+    from { transform: translateX(100%); opacity: 0; }
+    to { transform: translateX(0); opacity: 1; }
+  }
+
+  /* ========== RESPONSIVE ========== */
+  @media (max-width: 768px) {
+    .stats-bar { grid-template-columns: repeat(2, 1fr); }
+    .header { flex-direction: column; align-items: flex-start; }
+    .action-bar { flex-direction: column; align-items: stretch; }
+    .action-bar .spacer { display: none; }
+    .btn { justify-content: center; }
+    th, td { padding: 10px 14px; }
+    .account-name { font-size: 13px; }
+    .hide-mobile { display: none; }
+  }
+  @media (max-width: 480px) {
+    .stats-bar { grid-template-columns: 1fr 1fr; gap: 8px; }
+    .stat-card { padding: 14px 16px; }
+    .stat-value { font-size: 22px; }
+    .app { padding: 12px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+  <!-- HEADER -->
+  <header class="header">
+    <div class="header-left">
+      <div class="logo">B</div>
+      <div class="header-title">
+        <h1>BTC Faucet Bot</h1>
+        <p>FBTC0 Auto Claim - Web Dashboard</p>
+      </div>
+    </div>
+    <div class="header-right">
+      <div class="ws-status">
+        <div class="ws-dot" id="wsDot"></div>
+        <span id="wsText">Connecting...</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- STATS -->
+  <div class="stats-bar">
+    <div class="stat-card">
+      <div class="stat-label">Total Akun</div>
+      <div class="stat-value blue" id="statTotal">0</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Aktif</div>
+      <div class="stat-value green" id="statAktif">0</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Claim OK</div>
+      <div class="stat-value green" id="statOk">0</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Claim Fail</div>
+      <div class="stat-value red" id="statFail">0</div>
+    </div>
+  </div>
+
+  <!-- ACTION BAR -->
+  <div class="action-bar">
+    <button class="btn btn-upload" onclick="openUploadModal()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      Upload Session
+    </button>
+    <button class="btn btn-primary" onclick="startAll()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+      Start All
+    </button>
+    <button class="btn btn-danger" onclick="stopAll()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+      Stop All
+    </button>
+    <span class="spacer"></span>
+    <button class="btn btn-secondary" onclick="refreshStatus()">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="16" height="16"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+      Refresh
+    </button>
+  </div>
+
+  <!-- ACCOUNTS TABLE -->
+  <div class="card">
+    <div class="card-header">
+      <h2>Daftar Akun <span class="count" id="accountCount">0</span></h2>
+    </div>
+    <div id="accountTableWrap">
+      <div class="empty-state" id="emptyState">
+        <div class="empty-icon">+</div>
+        <h3>Belum ada akun</h3>
+        <p>Upload file .session Telegram untuk memulai auto-claim BTC faucet</p>
+      </div>
+      <div class="table-wrap" id="tableWrap" style="display:none;">
+        <table>
+          <thead>
+            <tr>
+              <th>Akun</th>
+              <th>Saldo</th>
+              <th>Status</th>
+              <th class="hide-mobile">OK / Fail</th>
+              <th>Aksi</th>
+            </tr>
+          </thead>
+          <tbody id="accountTbody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- LOG PANEL -->
+  <div class="log-panel">
+    <div class="log-header">
+      <h2>Riwayat Log</h2>
+      <button class="btn btn-secondary btn-sm" onclick="clearLogs()">Clear</button>
+    </div>
+    <div class="log-body" id="logBody">
+      <div class="log-empty">Belum ada log...</div>
+    </div>
+  </div>
+</div>
+
+<!-- UPLOAD MODAL -->
+<div class="modal-overlay" id="uploadModal">
+  <div class="modal">
+    <h2>Upload Session</h2>
+    <p>Pilih file .session Telethon dari akun Telegram kamu</p>
+    <div class="upload-zone" id="uploadZone" onclick="document.getElementById('fileInput').click()">
+      <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+      <p style="font-weight:600; color:var(--text-primary);">Klik atau drag file ke sini</p>
+      <p class="hint">.session file saja</p>
+      <input type="file" id="fileInput" accept=".session" multiple>
+    </div>
+    <div id="uploadStatus" style="display:none; margin-bottom:16px;"></div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeUploadModal()">Batal</button>
+    </div>
+  </div>
+</div>
+
+<!-- RENAME MODAL -->
+<div class="modal-overlay" id="renameModal">
+  <div class="modal">
+    <h2>Rename Akun</h2>
+    <p>Masukkan nama baru untuk akun ini</p>
+    <input class="rename-input" id="renameInput" type="text" placeholder="Nama baru...">
+    <input type="hidden" id="renameAccountId">
+    <div class="modal-actions">
+      <button class="btn btn-secondary" onclick="closeRenameModal()">Batal</button>
+      <button class="btn btn-primary" onclick="submitRename()">Simpan</button>
+    </div>
+  </div>
+</div>
+
+<!-- TOAST -->
+<div class="toast-container" id="toastContainer"></div>
+
+<script>
+const API = '';
+let ws = null;
+let wsReconnectTimer = null;
+let currentState = null;
+
+// ========== WEBSOCKET ==========
+function connectWS() {
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  ws = new WebSocket(`${proto}//${location.host}/ws`);
+
+  ws.onopen = () => {
+    document.getElementById('wsDot').classList.add('connected');
+    document.getElementById('wsText').textContent = 'Connected';
+    if (wsReconnectTimer) { clearTimeout(wsReconnectTimer); wsReconnectTimer = null; }
+  };
+
+  ws.onclose = () => {
+    document.getElementById('wsDot').classList.remove('connected');
+    document.getElementById('wsText').textContent = 'Disconnected';
+    wsReconnectTimer = setTimeout(connectWS, 3000);
+  };
+
+  ws.onerror = () => { ws.close(); };
+
+  ws.onmessage = (e) => {
+    try {
+      const msg = JSON.parse(e.data);
+      if (msg.type === 'ping') { ws.send('ping'); return; }
+      if (msg.type === 'init' || msg.type === 'status_update') {
+        updateUI(msg.data);
+      }
+      if (msg.type === 'log') {
+        addLogEntry(msg.data);
+      }
+    } catch(err) {}
+  };
+}
+
+// ========== UI UPDATE ==========
+function updateUI(data) {
+  currentState = data;
+  document.getElementById('statTotal').textContent = data.total;
+  document.getElementById('statAktif').textContent = data.aktif;
+  document.getElementById('statOk').textContent = data.total_ok;
+  document.getElementById('statFail').textContent = data.total_fail;
+  document.getElementById('accountCount').textContent = data.total;
+
+  const tbody = document.getElementById('accountTbody');
+  const empty = document.getElementById('emptyState');
+  const tableW = document.getElementById('tableWrap');
+
+  if (!data.accounts || data.accounts.length === 0) {
+    empty.style.display = '';
+    tableW.style.display = 'none';
+    return;
+  }
+
+  empty.style.display = 'none';
+  tableW.style.display = '';
+
+  tbody.innerHTML = data.accounts.map(acc => {
+    const initials = (acc.nama || '?').substring(0, 2).toUpperCase();
+    const statusBadge = getStatusBadge(acc.status);
+    const running = acc.running;
+    return `
+      <tr data-id="${esc(acc.id)}">
+        <td>
+          <div class="account-name">
+            <div class="avatar">${esc(initials)}</div>
+            <div>
+              <div>${esc(acc.nama)}</div>
+              <div style="font-size:11px;color:var(--text-muted);margin-top:1px">${esc(acc.id.split('/').pop().replace('.session',''))}</div>
+            </div>
+          </div>
+        </td>
+        <td><div class="balance">${acc.saldo}<span>sat</span></div></td>
+        <td>${statusBadge}</td>
+        <td class="hide-mobile" style="font-family:'JetBrains Mono',monospace;font-size:13px;">
+          <span style="color:var(--green)">${acc.ok}</span>
+          <span style="color:var(--text-muted)"> / </span>
+          <span style="color:var(--red)">${acc.fail}</span>
+        </td>
+        <td>
+          <div class="actions-cell">
+            ${running
+              ? `<button class="btn btn-danger btn-sm btn-icon" title="Stop" onclick="stopAccount('${esc(acc.id)}')">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/></svg>
+                </button>`
+              : `<button class="btn btn-primary btn-sm btn-icon" title="Start" onclick="startAccount('${esc(acc.id)}')">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+                </button>`
+            }
+            <button class="btn btn-secondary btn-sm btn-icon" title="Rename" onclick="openRenameModal('${esc(acc.id)}','${esc(acc.nama)}')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            </button>
+            <button class="btn btn-secondary btn-sm btn-icon" title="Hapus" onclick="deleteAccount('${esc(acc.id)}','${esc(acc.nama)}')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="14" height="14"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
+          </div>
+        </td>
+      </tr>
+    `;
+  }).join('');
+}
+
+function getStatusBadge(status) {
+  const s = (status || '').toUpperCase();
+  let cls = 'badge-idle', label = status || 'IDLE';
+
+  if (s.includes('SIAP') || s.includes('OK')) { cls = 'badge-green'; }
+  else if (s.includes('GAGAL') || s.includes('BLOKIR')) { cls = 'badge-red'; }
+  else if (s.includes('RETRY') || s.includes('CAPTCHA') || (/^\d/.test(s))) { cls = 'badge-yellow'; }
+  else if (s.includes('KLAIM') || s.includes('CEK') || s.includes('AUTH') || s.includes('LOAD')) { cls = 'badge-blue'; }
+
+  return `<span class="badge ${cls}"><span class="badge-dot"></span>${esc(label)}</span>`;
+}
+
+function addLogEntry(data) {
+  const body = document.getElementById('logBody');
+  const emptyEl = body.querySelector('.log-empty');
+  if (emptyEl) emptyEl.remove();
+
+  const div = document.createElement('div');
+  div.className = 'log-entry';
+
+  let msgClass = '';
+  const msgLower = (data.message || '').toLowerCase();
+  if (msgLower.includes('ok') || msgLower.includes('saldo') || msgLower.includes('auth ok') || msgLower.includes('solved') || msgLower.includes('task')) msgClass = 'ok';
+  else if (msgLower.includes('gagal') || msgLower.includes('error') || msgLower.includes('blokir')) msgClass = 'fail';
+  else if (msgLower.includes('retry') || msgLower.includes('captcha') || msgLower.includes('cooldown') || msgLower.includes('reset')) msgClass = 'warn';
+
+  div.innerHTML = `
+    <span class="log-time">${esc(data.time || '')}</span>
+    <span class="log-account">${esc(data.account || '')}</span>
+    <span class="log-msg ${msgClass}">${esc(data.message || '')}</span>
+  `;
+  body.appendChild(div);
+
+  // Keep max 100 entries
+  while (body.children.length > 100) body.removeChild(body.firstChild);
+  body.scrollTop = body.scrollHeight;
+}
+
+function clearLogs() {
+  const body = document.getElementById('logBody');
+  body.innerHTML = '<div class="log-empty">Log dibersihkan</div>';
+}
+
+// ========== API CALLS ==========
+async function apiPost(url, body) {
+  try {
+    const r = await fetch(url, { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body) });
+    return await r.json();
+  } catch(e) { return {ok:false, message: e.message}; }
+}
+
+async function apiDelete(url) {
+  try {
+    const r = await fetch(url, { method: 'DELETE' });
+    return await r.json();
+  } catch(e) { return {ok:false, message: e.message}; }
+}
+
+async function startAccount(id) {
+  const r = await apiPost(`${API}/api/account/start`, {id});
+  showToast(r.ok ? 'success' : 'error', r.message);
+}
+
+async function stopAccount(id) {
+  const r = await apiPost(`${API}/api/account/stop`, {id});
+  showToast(r.ok ? 'success' : 'error', r.message);
+}
+
+async function startAll() {
+  const r = await apiPost(`${API}/api/start-all`, {});
+  showToast('success', `${r.started || 0} akun dimulai`);
+}
+
+async function stopAll() {
+  const r = await apiPost(`${API}/api/stop-all`, {});
+  showToast('success', `${r.stopped || 0} akun dihentikan`);
+}
+
+async function deleteAccount(id, nama) {
+  if (!confirm(`Hapus akun "${nama}"? Session file juga akan dihapus.`)) return;
+  const r = await apiDelete(`${API}/api/account/${encodeURIComponent(id)}`);
+  showToast(r.ok ? 'success' : 'error', r.message);
+  refreshStatus();
+}
+
+async function refreshStatus() {
+  try {
+    const r = await fetch(`${API}/api/status`);
+    const data = await r.json();
+    updateUI(data);
+    // Also load logs
+    if (data.riwayat) {
+      data.riwayat.forEach(log => {
+        const parts = log.split(' | ');
+        if (parts.length >= 3) {
+          addLogEntry({time: parts[0], account: parts[1], message: parts.slice(2).join(' | ')});
+        }
+      });
+    }
+  } catch(e) {}
+}
+
+// ========== UPLOAD ==========
+function openUploadModal() { document.getElementById('uploadModal').classList.add('active'); }
+function closeUploadModal() {
+  document.getElementById('uploadModal').classList.remove('active');
+  document.getElementById('fileInput').value = '';
+  document.getElementById('uploadStatus').style.display = 'none';
+}
+
+const uploadZone = document.getElementById('uploadZone');
+uploadZone.addEventListener('dragover', (e) => { e.preventDefault(); uploadZone.classList.add('dragover'); });
+uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'));
+uploadZone.addEventListener('drop', (e) => {
+  e.preventDefault(); uploadZone.classList.remove('dragover');
+  handleFiles(e.dataTransfer.files);
+});
+document.getElementById('fileInput').addEventListener('change', (e) => handleFiles(e.target.files));
+
+async function handleFiles(files) {
+  const statusEl = document.getElementById('uploadStatus');
+  statusEl.style.display = '';
+  let ok = 0, fail = 0;
+
+  for (const file of files) {
+    if (!file.name.endsWith('.session')) {
+      fail++;
+      continue;
+    }
+    const formData = new FormData();
+    formData.append('file', file);
+    try {
+      const r = await fetch(`${API}/api/upload`, { method: 'POST', body: formData });
+      const data = await r.json();
+      if (data.ok) { ok++; } else { fail++; }
+    } catch(e) { fail++; }
+  }
+
+  statusEl.innerHTML = `<span style="color:var(--green)">${ok} uploaded</span> ${fail ? `<span style="color:var(--red)">${fail} gagal</span>` : ''}`;
+  if (ok > 0) {
+    showToast('success', `${ok} session berhasil diupload`);
+    setTimeout(() => closeUploadModal(), 1000);
+    setTimeout(() => refreshStatus(), 500);
+  }
+}
+
+// ========== RENAME ==========
+function openRenameModal(id, nama) {
+  document.getElementById('renameAccountId').value = id;
+  document.getElementById('renameInput').value = nama;
+  document.getElementById('renameModal').classList.add('active');
+  document.getElementById('renameInput').focus();
+}
+function closeRenameModal() { document.getElementById('renameModal').classList.remove('active'); }
+
+async function submitRename() {
+  const id = document.getElementById('renameAccountId').value;
+  const name = document.getElementById('renameInput').value.trim();
+  if (!name) return;
+  const r = await apiPost(`${API}/api/account/rename`, {id, name});
+  showToast(r.ok ? 'success' : 'error', r.message);
+  closeRenameModal();
+  refreshStatus();
+}
+
+document.getElementById('renameInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') submitRename();
+  if (e.key === 'Escape') closeRenameModal();
+});
+
+// ========== TOAST ==========
+function showToast(type, msg) {
+  const c = document.getElementById('toastContainer');
+  const t = document.createElement('div');
+  t.className = `toast ${type}`;
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(() => { t.style.opacity = '0'; setTimeout(() => t.remove(), 300); }, 3000);
+}
+
+// ========== UTILS ==========
+function esc(s) {
+  if (!s) return '';
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
+
+// ========== INIT ==========
+connectWS();
+refreshStatus();
+</script>
+
+</body>
+</html>
