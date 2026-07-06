@@ -443,7 +443,7 @@ async def broadcast_event(event: dict):
     for ws in ws_clients:
         try: await ws.send_json(event)
         except: dead.add(ws)
-    ws_clients -= dead
+    ws_clients.difference_update(dead)
 
 def format_waktu(d):
     if d <= 0: return "-"
