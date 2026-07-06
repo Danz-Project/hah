@@ -2,6 +2,7 @@
 """
 FBTC0 BTC Faucet Bot - Web Version (Railway Ready)
 FastAPI backend with WebSocket real-time dashboard
+v2 - Fixed: UUID-based account ID, proper upload, delete, rename
 """
 
 import os
@@ -10,17 +11,17 @@ import json
 import hashlib
 import random
 import asyncio
-import shutil
+import uuid
+import re
 import contextlib
 from datetime import datetime, timezone
 from urllib.parse import urlparse, parse_qs, unquote
 from pathlib import Path
-from typing import Optional
 
 from fastapi import FastAPI, UploadFile, File, WebSocket, WebSocketDisconnect, HTTPException
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 # ---------- SUPRESS TELETHON OUTPUT ----------
 with contextlib.redirect_stdout(open(os.devnull, "w")):
@@ -58,16 +59,25 @@ app.add_middleware(
 )
 
 # ========== GLOBAL STATE ==========
-accounts_db = {}       # key -> {nama, phone, session_path, status, saldo, ...}
-claim_ok = {}          # key -> int
-claim_fail = {}        # key -> int
+# Key = short UUID string (e.g. "a1b2c3"), Value = account info dict
+accounts_db = {}
+claim_ok = {}
+claim_fail = {}
 total_berhasil = 0
 total_gagal = 0
 riwayat = []
 riwayat_lock = asyncio.Lock()
-workers = {}           # key -> asyncio.Task
-broadcast_queue = asyncio.Queue()
+workers = {}       # uuid -> asyncio.Task
 ws_clients = set()
+
+
+# ========== Pydantic Models ==========
+class IdPayload(BaseModel):
+    id: str
+
+class RenamePayload(BaseModel):
+    id: str
+    name: str
 
 
 # ========== HTTP ASYNC WRAPPER ==========
@@ -101,10 +111,6 @@ async def http_post(url, payload=None, headers=None, timeout=20):
     return await http_req("post", url, payload, headers, timeout)
 
 
-async def http_get(url, headers=None, timeout=20):
-    return await http_req("get", url, None, headers, timeout)
-
-
 # ========== PARSE TG USER ==========
 def parse_tg_user(init_data):
     try:
@@ -131,18 +137,12 @@ _UA_IOS = (
 
 _DEVICE_PROFILES = {
     "android": {
-        "ua": _UA_ANDROID,
-        "screen": "412x915",
-        "platform": "Linux armv8l",
-        "viewport_width": 412,
-        "viewport_height": 915,
+        "ua": _UA_ANDROID, "screen": "412x915", "platform": "Linux armv8l",
+        "viewport_width": 412, "viewport_height": 915,
     },
     "ios": {
-        "ua": _UA_IOS,
-        "screen": "390x844",
-        "platform": "iPhone",
-        "viewport_width": 390,
-        "viewport_height": 844,
+        "ua": _UA_IOS, "screen": "390x844", "platform": "iPhone",
+        "viewport_width": 390, "viewport_height": 844,
     },
 }
 
@@ -153,15 +153,10 @@ def generate_fingerprint(ua_platform="android"):
     raw = f"{ua}|{ua_platform}|en-US|en,id|8|4|5|{prof['screen']}|24|Asia/Jakarta"
     visitor_id = hashlib.md5(raw.encode()).hexdigest()
     info = {
-        "ua": ua,
-        "screen": prof["screen"],
-        "lang": "en-US",
-        "tz": "Asia/Jakarta",
-        "platform": prof["platform"],
-        "tg_platform": ua_platform,
-        "viewport_width": prof["viewport_width"],
-        "viewport_height": prof["viewport_height"],
-        "max_touch_points": 5,
+        "ua": ua, "screen": prof["screen"], "lang": "en-US",
+        "tz": "Asia/Jakarta", "platform": prof["platform"],
+        "tg_platform": ua_platform, "viewport_width": prof["viewport_width"],
+        "viewport_height": prof["viewport_height"], "max_touch_points": 5,
         "device_pixel_ratio": 3,
     }
     return visitor_id, info
@@ -195,9 +190,7 @@ async def get_init_data(session_path):
         result = await client(
             RequestAppWebViewRequest(
                 peer=InputPeerUser(user_id=bot.id, access_hash=bot.access_hash),
-                app=app_req,
-                platform="android",
-                write_allowed=False,
+                app=app_req, platform="android", write_allowed=False,
             )
         )
         parsed = urlparse(result.url)
@@ -236,10 +229,8 @@ class FBTC0Bot:
 
     def _payload_base(self):
         return {
-            "initData": self.init_data,
-            "start_param": self.start_param,
-            "fingerprint": self.fp_id,
-            **self.device_info,
+            "initData": self.init_data, "start_param": self.start_param,
+            "fingerprint": self.fp_id, **self.device_info,
         }
 
     def _claim_payload(self):
@@ -248,9 +239,7 @@ class FBTC0Bot:
 
     async def auth(self):
         try:
-            self.init_data, self.start_param = await get_init_data(
-                self.session_path
-            )
+            self.init_data, self.start_param = await get_init_data(self.session_path)
             if not self.init_data:
                 return False, "Gagal ambil initData"
             return True, "OK"
@@ -260,9 +249,7 @@ class FBTC0Bot:
     async def init_app(self):
         try:
             payload = self._payload_base()
-            status_code, text = await http_post(
-                f"{API_BASE}/init", payload, self.headers
-            )
+            status_code, text = await http_post(f"{API_BASE}/init", payload, self.headers)
             if status_code == 401 or status_code == 403:
                 return False, "Unauthorized/Blokir"
             if status_code != 200:
@@ -292,8 +279,7 @@ class FBTC0Bot:
         try:
             sc, text = await http_post(
                 f"{API_BASE}/captcha/challenge",
-                {"initData": self.init_data},
-                self.headers,
+                {"initData": self.init_data}, self.headers,
             )
             if sc != 200:
                 return False
@@ -327,11 +313,7 @@ class FBTC0Bot:
                 return False
             sc2, text2 = await http_post(
                 f"{API_BASE}/captcha/verify",
-                {
-                    "initData": self.init_data,
-                    "challenge_id": challenge_id,
-                    "answer": answer_id,
-                },
+                {"initData": self.init_data, "challenge_id": challenge_id, "answer": answer_id},
                 self.headers,
             )
             return sc2 == 200
@@ -342,47 +324,27 @@ class FBTC0Bot:
         try:
             tg_user = parse_tg_user(self.init_data)
             giga_headers = {
-                "Content-Type": "application/json",
-                "project-id": "5736",
+                "Content-Type": "application/json", "project-id": "5736",
                 "User-Agent": self.device_info["ua"],
             }
             giga_user = {
-                "user": tg_user,
-                "platform": self.device_info["tg_platform"],
-                "version": "10.0",
-                "start_param": self.start_param,
+                "user": tg_user, "platform": self.device_info["tg_platform"],
+                "version": "10.0", "start_param": self.start_param,
             }
-            await http_post(
-                GIGA_V1,
-                {
-                    "method": "init",
-                    "args": {
-                        "user": giga_user,
-                        "version": "v85",
-                        "seconds": 5,
-                    },
-                },
-                giga_headers,
-            )
+            await http_post(GIGA_V1, {
+                "method": "init",
+                "args": {"user": giga_user, "version": "v85", "seconds": 5},
+            }, giga_headers)
             await asyncio.sleep(0.5)
-            await http_post(
-                GIGA_V1,
-                {
-                    "method": "adShowed",
-                    "args": {
-                        "user": giga_user,
-                        "placementId": "main",
-                        "network": "gigapubs",
-                        "rotationType": "fallback",
-                        "showCounter": 0,
-                        "transactionId": session_uid,
-                        "version": "v85",
-                        "seconds": 8,
-                        "anyData": {},
-                    },
+            await http_post(GIGA_V1, {
+                "method": "adShowed",
+                "args": {
+                    "user": giga_user, "placementId": "main", "network": "gigapubs",
+                    "rotationType": "fallback", "showCounter": 0,
+                    "transactionId": session_uid, "version": "v85",
+                    "seconds": 8, "anyData": {},
                 },
-                giga_headers,
-            )
+            }, giga_headers)
             return True
         except Exception:
             return False
@@ -408,16 +370,12 @@ class FBTC0Bot:
                 return False, 60, "Captcha gagal"
         try:
             payload = self._claim_payload()
-            sc, text = await http_post(
-                f"{API_BASE}/claim", payload, self.headers
-            )
+            sc, text = await http_post(f"{API_BASE}/claim", payload, self.headers)
             if sc == 428:
                 if await self.solve_captcha():
                     self.captcha_required = False
                     await asyncio.sleep(1)
-                    sc, text = await http_post(
-                        f"{API_BASE}/claim", payload, self.headers
-                    )
+                    sc, text = await http_post(f"{API_BASE}/claim", payload, self.headers)
                 else:
                     return False, 60, "Captcha 428 gagal"
             if sc != 200:
@@ -438,8 +396,7 @@ class FBTC0Bot:
                 if adexium_reset:
                     try:
                         self.adexium_reset_at = datetime.fromisoformat(
-                            adexium_reset.replace("Z", "+00:00")
-                        )
+                            adexium_reset.replace("Z", "+00:00"))
                     except Exception:
                         self.adexium_reset_at = None
                 if not session_uid:
@@ -449,54 +406,35 @@ class FBTC0Bot:
                     if bypass_ok and await self._poll_balance(max_wait=15):
                         ok_init, _ = await self.init_app()
                         if ok_init:
-                            return (
-                                True,
-                                self.cooldown_server or 300,
-                                f"+{reward_sats} sat",
-                            )
+                            return True, self.cooldown_server or 300, f"+{reward_sats} sat"
                     if self.adexium_remaining > 0:
                         await asyncio.sleep(random.uniform(2.5, 4.0))
                         sc2, text2 = await http_post(
                             f"{API_BASE}/claim/confirm",
-                            {
-                                "initData": self.init_data,
-                                "session_uid": session_uid,
-                            },
+                            {"initData": self.init_data, "session_uid": session_uid},
                             self.headers,
                         )
                         if sc2 == 200:
                             data2 = json.loads(text2)
                             if data2.get("status") == "success":
                                 self.saldo = data2.get("new_balance", self.saldo)
-                                return (
-                                    True,
-                                    data2.get("cooldown", 300),
-                                    f"+{data2.get('reward', reward_sats)} sat",
-                                )
+                                return True, data2.get("cooldown", 300), f"+{data2.get('reward', reward_sats)} sat"
                     return False, 120, "GigaPubs bypass gagal"
                 if provider == "adexium":
                     await asyncio.sleep(random.uniform(2.5, 4.0))
                     sc2, text2 = await http_post(
                         f"{API_BASE}/claim/confirm",
-                        {
-                            "initData": self.init_data,
-                            "session_uid": session_uid,
-                        },
+                        {"initData": self.init_data, "session_uid": session_uid},
                         self.headers,
                     )
                     if sc2 == 200:
                         data2 = json.loads(text2)
                         if data2.get("status") == "success":
                             self.saldo = data2.get("new_balance", self.saldo)
-                            return (
-                                True,
-                                data2.get("cooldown", 300),
-                                f"+{data2.get('reward', reward_sats)} sat",
-                            )
+                            return True, data2.get("cooldown", 300), f"+{data2.get('reward', reward_sats)} sat"
                     sc_fb, text_fb = await http_post(
                         f"{API_BASE}/claim/fallback",
-                        {"initData": self.init_data},
-                        self.headers,
+                        {"initData": self.init_data}, self.headers,
                     )
                     if sc_fb == 200:
                         d_fb = json.loads(text_fb)
@@ -506,11 +444,7 @@ class FBTC0Bot:
                             if bypass_ok and await self._poll_balance(max_wait=15):
                                 ok_init, _ = await self.init_app()
                                 if ok_init:
-                                    return (
-                                        True,
-                                        self.cooldown_server or 300,
-                                        f"+{reward_sats} sat",
-                                    )
+                                    return True, self.cooldown_server or 300, f"+{reward_sats} sat"
                     return False, 120, "Adexium + GigaPubs gagal"
             return False, 60, f"Status: {status}"
         except json.JSONDecodeError:
@@ -523,22 +457,17 @@ class FBTC0Bot:
         try:
             sc, text = await http_post(
                 f"{API_BASE}/tasks/telegram/list",
-                {"initData": self.init_data},
-                self.headers,
+                {"initData": self.init_data}, self.headers,
             )
             if sc == 200:
                 data = json.loads(text)
-                tasks = data.get("tasks", [])
-                for task in tasks:
+                for task in data.get("tasks", []):
                     tid = task.get("id")
                     title = task.get("title", "?")
-                    is_done = task.get("is_done", False)
-                    is_claimed = task.get("is_claimed", False)
-                    if is_done and not is_claimed and tid:
+                    if task.get("is_done") and not task.get("is_claimed") and tid:
                         sc2, _ = await http_post(
                             f"{API_BASE}/tasks/telegram/claim",
-                            {"initData": self.init_data, "task_id": tid},
-                            self.headers,
+                            {"initData": self.init_data, "task_id": tid}, self.headers,
                         )
                         if sc2 == 200:
                             hasil.append(f"Task: {title}")
@@ -547,7 +476,7 @@ class FBTC0Bot:
         return hasil
 
     async def cek_saldo(self):
-        ok, msg = await self.init_app()
+        ok, _ = await self.init_app()
         return self.saldo
 
 
@@ -564,7 +493,6 @@ async def tambah_riwayat(akun, pesan):
 
 
 async def broadcast_event(event: dict):
-    """Broadcast event ke semua WebSocket clients"""
     dead = set()
     for ws in ws_clients:
         try:
@@ -589,28 +517,31 @@ def format_waktu(detik):
 
 
 # ========== PEKERJA AKUN (Worker) ==========
-async def pekerja_akun(info_akun, key):
+async def pekerja_akun(info_akun, acc_id):
     global total_berhasil, total_gagal
 
     bot = FBTC0Bot(info_akun)
     nama = info_akun["nama"]
 
-    accounts_db[key]["status"] = "AUTH..."
+    if acc_id not in accounts_db:
+        return
+
+    accounts_db[acc_id]["status"] = "AUTH..."
     await broadcast_event({"type": "status_update", "data": get_all_status()})
 
-    if key not in claim_ok:
-        claim_ok[key] = 0
-    if key not in claim_fail:
-        claim_fail[key] = 0
+    if acc_id not in claim_ok:
+        claim_ok[acc_id] = 0
+    if acc_id not in claim_fail:
+        claim_fail[acc_id] = 0
 
     # 1. Auth
-    accounts_db[key]["status"] = "AUTH..."
+    accounts_db[acc_id]["status"] = "AUTH..."
     await broadcast_event({"type": "status_update", "data": get_all_status()})
     ok, msg = await bot.auth()
     if not ok:
-        accounts_db[key]["status"] = "GAGAL AUTH"
+        accounts_db[acc_id]["status"] = "GAGAL AUTH"
         total_gagal += 1
-        claim_fail[key] += 1
+        claim_fail[acc_id] += 1
         await tambah_riwayat(nama, f"Gagal auth: {msg}")
         simpan_status()
         await broadcast_event({"type": "status_update", "data": get_all_status()})
@@ -619,24 +550,24 @@ async def pekerja_akun(info_akun, key):
     await tambah_riwayat(nama, "Auth OK")
 
     # 2. Init
-    accounts_db[key]["status"] = "LOAD..."
+    accounts_db[acc_id]["status"] = "LOAD..."
     await broadcast_event({"type": "status_update", "data": get_all_status()})
     ok, msg = await bot.init_app()
     if not ok:
-        accounts_db[key]["status"] = "GAGAL INIT"
+        accounts_db[acc_id]["status"] = "GAGAL INIT"
         total_gagal += 1
-        claim_fail[key] += 1
+        claim_fail[acc_id] += 1
         await tambah_riwayat(nama, f"Init gagal: {msg}")
         simpan_status()
         await broadcast_event({"type": "status_update", "data": get_all_status()})
         return
 
-    accounts_db[key]["saldo"] = bot.saldo
+    accounts_db[acc_id]["saldo"] = bot.saldo
     await tambah_riwayat(nama, f"Saldo: {bot.saldo} sat")
 
     # 3. Captcha
     if bot.captcha_required:
-        accounts_db[key]["status"] = "CAPTCHA..."
+        accounts_db[acc_id]["status"] = "CAPTCHA..."
         await broadcast_event({"type": "status_update", "data": get_all_status()})
         await tambah_riwayat(nama, "Captcha detected, solving...")
         if await bot.solve_captcha():
@@ -649,38 +580,34 @@ async def pekerja_akun(info_akun, key):
     if bot.cooldown_server > 0:
         await tambah_riwayat(nama, f"Cooldown {format_waktu(bot.cooldown_server)}")
         for t in range(bot.cooldown_server, 0, -1):
-            if key not in accounts_db:
-                return  # Account was deleted
-            accounts_db[key]["status"] = format_waktu(t)
+            if acc_id not in accounts_db:
+                return
+            accounts_db[acc_id]["status"] = format_waktu(t)
             if t % 3 == 0:
-                await broadcast_event(
-                    {"type": "status_update", "data": get_all_status()}
-                )
+                await broadcast_event({"type": "status_update", "data": get_all_status()})
             await asyncio.sleep(1)
 
-    accounts_db[key]["status"] = "SIAP"
+    accounts_db[acc_id]["status"] = "SIAP"
     await broadcast_event({"type": "status_update", "data": get_all_status()})
 
     # 5. Main claim loop
-    while key in accounts_db:
+    while acc_id in accounts_db:
         try:
-            accounts_db[key]["status"] = "KLAIM..."
+            accounts_db[acc_id]["status"] = "KLAIM..."
             await broadcast_event({"type": "status_update", "data": get_all_status()})
 
             berhasil, cooldown, pesan = await bot.klaim()
 
             if berhasil:
                 total_berhasil += 1
-                claim_ok[key] += 1
-                accounts_db[key]["saldo"] = bot.saldo
+                claim_ok[acc_id] += 1
+                accounts_db[acc_id]["saldo"] = bot.saldo
                 await tambah_riwayat(nama, f"OK {pesan} | Saldo: {bot.saldo}")
             else:
                 for retry in range(3):
                     await tambah_riwayat(nama, f"Retry {retry + 1}/3 - {pesan}")
-                    accounts_db[key]["status"] = f"RETRY {retry + 1}/3"
-                    await broadcast_event(
-                        {"type": "status_update", "data": get_all_status()}
-                    )
+                    accounts_db[acc_id]["status"] = f"RETRY {retry + 1}/3"
+                    await broadcast_event({"type": "status_update", "data": get_all_status()})
                     await asyncio.sleep(3)
                     ok_r, _ = await bot.auth()
                     if ok_r:
@@ -694,14 +621,12 @@ async def pekerja_akun(info_akun, key):
 
                 if berhasil:
                     total_berhasil += 1
-                    claim_ok[key] += 1
-                    accounts_db[key]["saldo"] = bot.saldo
-                    await tambah_riwayat(
-                        nama, f"OK {pesan} | Saldo: {bot.saldo}"
-                    )
+                    claim_ok[acc_id] += 1
+                    accounts_db[acc_id]["saldo"] = bot.saldo
+                    await tambah_riwayat(nama, f"OK {pesan} | Saldo: {bot.saldo}")
                 else:
                     total_gagal += 1
-                    claim_fail[key] += 1
+                    claim_fail[acc_id] += 1
                     await tambah_riwayat(nama, f"GAGAL - {pesan}")
                     if bot.adexium_reset_at and bot.adexium_remaining <= 0:
                         try:
@@ -710,33 +635,27 @@ async def pekerja_akun(info_akun, key):
                             if diff > 0:
                                 jam = int(diff // 3600)
                                 menit = int((diff % 3600) // 60)
-                                reset_str = (
-                                    f"{jam}j {menit}m" if jam > 0 else f"{menit}m"
-                                )
-                                await tambah_riwayat(
-                                    nama, f"Adexium reset: {reset_str}"
-                                )
+                                reset_str = f"{jam}j {menit}m" if jam > 0 else f"{menit}m"
+                                await tambah_riwayat(nama, f"Adexium reset: {reset_str}")
                         except Exception:
                             pass
 
             simpan_status()
 
-            accounts_db[key]["status"] = "CEK..."
+            accounts_db[acc_id]["status"] = "CEK..."
             await broadcast_event({"type": "status_update", "data": get_all_status()})
             await bot.cek_saldo()
-            accounts_db[key]["saldo"] = bot.saldo
+            accounts_db[acc_id]["saldo"] = bot.saldo
 
             sisa = max(cooldown, 60)
             sisa = min(sisa, 3600)
 
             for t in range(sisa, 0, -1):
-                if key not in accounts_db:
-                    return  # Account was deleted/removed
-                accounts_db[key]["status"] = format_waktu(t)
+                if acc_id not in accounts_db:
+                    return
+                accounts_db[acc_id]["status"] = format_waktu(t)
                 if t % 5 == 0:
-                    await broadcast_event(
-                        {"type": "status_update", "data": get_all_status()}
-                    )
+                    await broadcast_event({"type": "status_update", "data": get_all_status()})
                 await asyncio.sleep(1)
 
             ok_ref, _ = await bot.auth()
@@ -757,29 +676,24 @@ async def pekerja_akun(info_akun, key):
 def get_all_status():
     total = len(accounts_db)
     aktif = sum(
-        1
-        for d in accounts_db.values()
+        1 for d in accounts_db.values()
         if any(k in d["status"] for k in ["SIAP", "KLAIM", "CEK", "RETRY"])
     )
     akun_list = []
-    for key, d in accounts_db.items():
-        akun_list.append(
-            {
-                "id": key,
-                "nama": d["nama"],
-                "phone": d.get("phone", d["nama"]),
-                "saldo": d["saldo"],
-                "status": d["status"],
-                "ok": claim_ok.get(key, 0),
-                "fail": claim_fail.get(key, 0),
-                "running": key in workers and not workers[key].done(),
-            }
-        )
+    for acc_id, d in accounts_db.items():
+        akun_list.append({
+            "id": acc_id,
+            "nama": d["nama"],
+            "session_file": d.get("session_file", ""),
+            "saldo": d["saldo"],
+            "status": d["status"],
+            "ok": claim_ok.get(acc_id, 0),
+            "fail": claim_fail.get(acc_id, 0),
+            "running": acc_id in workers and not workers[acc_id].done(),
+        })
     return {
-        "total": total,
-        "aktif": aktif,
-        "total_ok": total_berhasil,
-        "total_fail": total_gagal,
+        "total": total, "aktif": aktif,
+        "total_ok": total_berhasil, "total_fail": total_gagal,
         "accounts": akun_list,
         "riwayat": list(riwayat[-20:]),
     }
@@ -791,19 +705,17 @@ def muat_status():
             with open(FILE_STATUS, "r") as f:
                 data = json.load(f)
             for item in data:
-                key = None
-                for v in item.values():
-                    if isinstance(v, str) and len(v) > 3:
-                        key = v
-                        break
-                if key:
-                    claim_ok[key] = int(item.get("ok", 0))
-                    claim_fail[key] = int(item.get("fail", 0))
+                # Look for acc_id field
+                acc_id = item.get("acc_id", "")
+                if acc_id and acc_id in accounts_db:
+                    claim_ok[acc_id] = int(item.get("ok", 0))
+                    claim_fail[acc_id] = int(item.get("fail", 0))
         except Exception:
             pass
 
 
 def muat_akun():
+    """Load accounts from JSON. Returns list of dicts."""
     if FILE_AKUN.exists():
         try:
             with open(FILE_AKUN, "r") as f:
@@ -815,15 +727,14 @@ def muat_akun():
 
 def simpan_status():
     data = []
-    for key in accounts_db:
-        info = accounts_db[key]
-        data.append(
-            {
-                info["nama"]: key,
-                "ok": str(claim_ok.get(key, 0)),
-                "fail": str(claim_fail.get(key, 0)),
-            }
-        )
+    for acc_id in accounts_db:
+        info = accounts_db[acc_id]
+        data.append({
+            "acc_id": acc_id,
+            "nama": info["nama"],
+            "ok": claim_ok.get(acc_id, 0),
+            "fail": claim_fail.get(acc_id, 0),
+        })
     try:
         with open(FILE_STATUS, "w") as f:
             json.dump(data, f, indent=4)
@@ -833,19 +744,26 @@ def simpan_status():
 
 def simpan_akun():
     akun_list = []
-    for key, d in accounts_db.items():
-        akun_list.append(
-            {
-                "session_path": d["session_path"],
-                "nama": d["nama"],
-                "phone": d.get("phone", d["nama"]),
-            }
-        )
+    for acc_id, d in accounts_db.items():
+        akun_list.append({
+            "acc_id": acc_id,
+            "session_path": d["session_path"],
+            "session_file": d.get("session_file", ""),
+            "nama": d["nama"],
+            "phone": d.get("phone", d["nama"]),
+        })
     try:
         with open(FILE_AKUN, "w") as f:
             json.dump(akun_list, f, indent=4)
     except Exception:
         pass
+
+
+def sanitize_filename(name):
+    """Remove path separators and dangerous chars from filename"""
+    name = os.path.basename(name)  # strip any directory path
+    name = re.sub(r'[^\w\-.]', '_', name)  # only alphanumeric, underscore, dash, dot
+    return name
 
 
 # ========== API ROUTES ==========
@@ -862,63 +780,83 @@ async def api_status():
 @app.post("/api/upload")
 async def upload_session(file: UploadFile = File(...)):
     """Upload .session file dan tambah akun baru"""
-    if not file.filename.endswith(".session"):
+    filename = file.filename or ""
+    if not filename.lower().endswith(".session"):
         raise HTTPException(400, "File harus .session")
 
-    # Baca file content
-    content = await file.read()
-    nama = file.filename.replace(".session", "")
+    # Sanitize filename
+    clean_name = sanitize_filename(filename.replace(".session", "").replace(".SESSION", ""))
+    if not clean_name:
+        clean_name = "unknown"
 
-    # Simpan ke sessions/
-    session_filename = f"{nama}.session"
+    session_filename = f"{clean_name}.session"
     session_path = SESSIONS_DIR / session_filename
-    with open(session_path, "wb") as f:
-        f.write(content)
 
-    # Cek apakah sudah ada
-    key = str(session_path)
-    if key in accounts_db:
-        # Update session file
-        accounts_db[key]["session_path"] = str(session_path)
-        await tambah_riwayat(nama, "Session file updated")
+    # Handle duplicate filename
+    counter = 1
+    original_clean = clean_name
+    while session_path.exists():
+        clean_name = f"{original_clean}_{counter}"
+        session_filename = f"{clean_name}.session"
+        session_path = SESSIONS_DIR / session_filename
+        counter += 1
+
+    # Read and save file
+    try:
+        content = await file.read()
+        if len(content) == 0:
+            raise HTTPException(400, "File kosong")
+        with open(session_path, "wb") as f:
+            f.write(content)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, f"Gagal simpan file: {str(e)[:80]}")
+
+    # Check if session file with same path already registered
+    existing_id = None
+    for acc_id, d in accounts_db.items():
+        if d.get("session_path") == str(session_path):
+            existing_id = acc_id
+            break
+
+    if existing_id:
+        # Update existing
+        accounts_db[existing_id]["session_path"] = str(session_path)
+        accounts_db[existing_id]["session_file"] = session_filename
+        await tambah_riwayat(clean_name, "Session file updated")
     else:
-        # Tambah akun baru
-        accounts_db[key] = {
-            "nama": nama,
-            "phone": nama,
+        # Create new with short UUID
+        acc_id = uuid.uuid4().hex[:8]
+        accounts_db[acc_id] = {
+            "nama": clean_name,
+            "phone": clean_name,
             "session_path": str(session_path),
+            "session_file": session_filename,
             "status": "IDLE",
             "saldo": 0,
         }
-        await tambah_riwayat(nama, "Akun ditambahkan")
+        await tambah_riwayat(clean_name, "Akun ditambahkan")
 
     simpan_akun()
-    return {
-        "ok": True,
-        "message": f"Akun '{nama}' berhasil ditambahkan",
-        "data": get_all_status(),
-    }
+    return {"ok": True, "message": f"Akun '{clean_name}' berhasil ditambahkan"}
 
 
 @app.post("/api/account/start")
-async def start_account(payload: dict):
-    """Mulai bot untuk satu akun"""
-    account_id = payload.get("id")
-    if not account_id or account_id not in accounts_db:
+async def start_account(payload: IdPayload):
+    acc_id = payload.id
+    if not acc_id or acc_id not in accounts_db:
         raise HTTPException(404, "Akun tidak ditemukan")
 
-    if account_id in workers and not workers[account_id].done():
+    if acc_id in workers and not workers[acc_id].done():
         return {"ok": False, "message": "Akun sudah berjalan"}
 
-    info = accounts_db[account_id]
-    workers[account_id] = asyncio.create_task(
+    info = accounts_db[acc_id]
+    workers[acc_id] = asyncio.create_task(
         pekerja_akun(
-            {
-                "session_path": info["session_path"],
-                "nama": info["nama"],
-                "phone": info.get("phone", info["nama"]),
-            },
-            account_id,
+            {"session_path": info["session_path"], "nama": info["nama"],
+             "phone": info.get("phone", info["nama"])},
+            acc_id,
         )
     )
     await tambah_riwayat(info["nama"], "Bot dimulai")
@@ -926,36 +864,32 @@ async def start_account(payload: dict):
 
 
 @app.post("/api/account/stop")
-async def stop_account(payload: dict):
-    """Hentikan bot untuk satu akun"""
-    account_id = payload.get("id")
-    if not account_id or account_id not in accounts_db:
+async def stop_account(payload: IdPayload):
+    acc_id = payload.id
+    if not acc_id or acc_id not in accounts_db:
         raise HTTPException(404, "Akun tidak ditemukan")
 
-    if account_id in workers and not workers[account_id].done():
-        workers[account_id].cancel()
-        accounts_db[account_id]["status"] = "STOPPED"
-        await tambah_riwayat(accounts_db[account_id]["nama"], "Bot dihentikan")
+    if acc_id in workers and not workers[acc_id].done():
+        workers[acc_id].cancel()
+        accounts_db[acc_id]["status"] = "STOPPED"
+        await tambah_riwayat(accounts_db[acc_id]["nama"], "Bot dihentikan")
     else:
-        accounts_db[account_id]["status"] = "IDLE"
+        accounts_db[acc_id]["status"] = "IDLE"
 
+    await broadcast_event({"type": "status_update", "data": get_all_status()})
     return {"ok": True, "message": "Bot dihentikan"}
 
 
 @app.post("/api/start-all")
 async def start_all():
-    """Mulai semua akun yang IDLE"""
     started = 0
-    for key, info in accounts_db.items():
-        if key not in workers or workers[key].done():
-            workers[key] = asyncio.create_task(
+    for acc_id, info in accounts_db.items():
+        if acc_id not in workers or workers[acc_id].done():
+            workers[acc_id] = asyncio.create_task(
                 pekerja_akun(
-                    {
-                        "session_path": info["session_path"],
-                        "nama": info["nama"],
-                        "phone": info.get("phone", info["nama"]),
-                    },
-                    key,
+                    {"session_path": info["session_path"], "nama": info["nama"],
+                     "phone": info.get("phone", info["nama"])},
+                    acc_id,
                 )
             )
             started += 1
@@ -965,30 +899,31 @@ async def start_all():
 
 @app.post("/api/stop-all")
 async def stop_all():
-    """Hentikan semua bot"""
     stopped = 0
-    for key in list(workers.keys()):
-        if not workers[key].done():
-            workers[key].cancel()
-            if key in accounts_db:
-                accounts_db[key]["status"] = "STOPPED"
+    for acc_id in list(workers.keys()):
+        if not workers[acc_id].done():
+            workers[acc_id].cancel()
+            if acc_id in accounts_db:
+                accounts_db[acc_id]["status"] = "STOPPED"
             stopped += 1
     await tambah_riwayat("SYSTEM", f"Stop all: {stopped} akun")
+    await broadcast_event({"type": "status_update", "data": get_all_status()})
     return {"ok": True, "stopped": stopped}
 
 
-@app.delete("/api/account/{account_id}")
-async def delete_account(account_id: str):
-    """Hapus akun"""
-    if account_id not in accounts_db:
+@app.post("/api/account/delete")
+async def delete_account(payload: IdPayload):
+    """Hapus akun - menggunakan POST agar tidak ada masalah path"""
+    acc_id = payload.id
+    if not acc_id or acc_id not in accounts_db:
         raise HTTPException(404, "Akun tidak ditemukan")
 
     # Stop worker
-    if account_id in workers and not workers[account_id].done():
-        workers[account_id].cancel()
+    if acc_id in workers and not workers[acc_id].done():
+        workers[acc_id].cancel()
 
-    nama = accounts_db[account_id]["nama"]
-    session_path = accounts_db[account_id].get("session_path", "")
+    nama = accounts_db[acc_id]["nama"]
+    session_path = accounts_db[acc_id].get("session_path", "")
 
     # Hapus session file
     if session_path and os.path.exists(session_path):
@@ -997,32 +932,33 @@ async def delete_account(account_id: str):
         except Exception:
             pass
 
-    del accounts_db[account_id]
-    claim_ok.pop(account_id, None)
-    claim_fail.pop(account_id, None)
-    workers.pop(account_id, None)
+    del accounts_db[acc_id]
+    claim_ok.pop(acc_id, None)
+    claim_fail.pop(acc_id, None)
+    workers.pop(acc_id, None)
 
     simpan_akun()
     simpan_status()
     await tambah_riwayat("SYSTEM", f"Akun '{nama}' dihapus")
+    await broadcast_event({"type": "status_update", "data": get_all_status()})
     return {"ok": True, "message": f"Akun '{nama}' dihapus"}
 
 
 @app.post("/api/account/rename")
-async def rename_account(payload: dict):
-    """Rename akun"""
-    account_id = payload.get("id")
-    new_name = payload.get("name", "").strip()
-    if not account_id or account_id not in accounts_db:
+async def rename_account(payload: RenamePayload):
+    acc_id = payload.id
+    new_name = payload.name.strip()
+    if not acc_id or acc_id not in accounts_db:
         raise HTTPException(404, "Akun tidak ditemukan")
     if not new_name:
         raise HTTPException(400, "Nama tidak boleh kosong")
 
-    old_name = accounts_db[account_id]["nama"]
-    accounts_db[account_id]["nama"] = new_name
-    accounts_db[account_id]["phone"] = new_name
+    old_name = accounts_db[acc_id]["nama"]
+    accounts_db[acc_id]["nama"] = new_name
+    accounts_db[acc_id]["phone"] = new_name
     simpan_akun()
     await tambah_riwayat("SYSTEM", f"Rename: {old_name} -> {new_name}")
+    await broadcast_event({"type": "status_update", "data": get_all_status()})
     return {"ok": True, "message": f"Rename ke '{new_name}'"}
 
 
@@ -1032,15 +968,10 @@ async def websocket_endpoint(ws: WebSocket):
     await ws.accept()
     ws_clients.add(ws)
     try:
-        # Send current status on connect
-        await ws.send_json(
-            {"type": "init", "data": get_all_status()}
-        )
-        # Keep alive
+        await ws.send_json({"type": "init", "data": get_all_status()})
         while True:
             try:
                 data = await asyncio.wait_for(ws.receive_text(), timeout=30)
-                # Client ping
                 if data == "ping":
                     await ws.send_json({"type": "pong"})
             except asyncio.TimeoutError:
@@ -1051,26 +982,49 @@ async def websocket_endpoint(ws: WebSocket):
         ws_clients.discard(ws)
 
 
-# ========== STARTUP ==========
-@app.on_event("startup")
-async def startup():
+# ========== STARTUP (lifespan) ==========
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def lifespan(app):
+    # Startup
     muat_status()
     akun_list = muat_akun()
     for acc in akun_list:
         session_path = acc.get("session_path", "")
-        if session_path and os.path.exists(session_path):
-            accounts_db[session_path] = {
-                "nama": acc.get("nama", "?"),
-                "phone": acc.get("phone", acc.get("nama", "?")),
-                "session_path": session_path,
-                "status": "IDLE",
-                "saldo": 0,
-            }
+        acc_id = acc.get("acc_id", "")
+        # On Railway, the path changes between deploys, so try to find the file
+        if not os.path.exists(session_path):
+            # Try to find by filename in SESSIONS_DIR
+            session_file = acc.get("session_file", "")
+            if session_file and (SESSIONS_DIR / session_file).exists():
+                session_path = str(SESSIONS_DIR / session_file)
+            else:
+                # File doesn't exist, skip this account
+                continue
+
+        if not acc_id:
+            acc_id = uuid.uuid4().hex[:8]
+
+        accounts_db[acc_id] = {
+            "nama": acc.get("nama", "?"),
+            "phone": acc.get("phone", acc.get("nama", "?")),
+            "session_path": session_path,
+            "session_file": acc.get("session_file", os.path.basename(session_path)),
+            "status": "IDLE",
+            "saldo": 0,
+        }
+    yield
+    # Shutdown
+    for acc_id in list(workers.keys()):
+        if not workers[acc_id].done():
+            workers[acc_id].cancel()
+
+app.router.lifespan_context = lifespan
 
 
 # ========== RAILWAY / UVICORN ==========
 if __name__ == "__main__":
     import uvicorn
-
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)

@@ -561,7 +561,7 @@ function updateUI(data) {
             <div class="avatar">${esc(initials)}</div>
             <div>
               <div>${esc(acc.nama)}</div>
-              <div style="font-size:11px;color:var(--text-muted);margin-top:1px">${esc(acc.id.split('/').pop().replace('.session',''))}</div>
+              <div style="font-size:11px;color:var(--text-muted);margin-top:1px">${esc(acc.session_file || acc.id)}</div>
             </div>
           </div>
         </td>
@@ -646,12 +646,7 @@ async function apiPost(url, body) {
   } catch(e) { return {ok:false, message: e.message}; }
 }
 
-async function apiDelete(url) {
-  try {
-    const r = await fetch(url, { method: 'DELETE' });
-    return await r.json();
-  } catch(e) { return {ok:false, message: e.message}; }
-}
+
 
 async function startAccount(id) {
   const r = await apiPost(`${API}/api/account/start`, {id});
@@ -675,7 +670,7 @@ async function stopAll() {
 
 async function deleteAccount(id, nama) {
   if (!confirm(`Hapus akun "${nama}"? Session file juga akan dihapus.`)) return;
-  const r = await apiDelete(`${API}/api/account/${encodeURIComponent(id)}`);
+  const r = await apiPost(`${API}/api/account/delete`, {id});
   showToast(r.ok ? 'success' : 'error', r.message);
   refreshStatus();
 }
@@ -728,9 +723,16 @@ async function handleFiles(files) {
     formData.append('file', file);
     try {
       const r = await fetch(`${API}/api/upload`, { method: 'POST', body: formData });
+      if (!r.ok) {
+        const errData = await r.json().catch(() => ({}));
+        console.error('Upload error:', r.status, errData);
+        fail++;
+        statusEl.innerHTML += '<br><span style="color:var(--red);font-size:12px">' + esc(file.name) + ': ' + esc(errData.detail || 'Gagal upload') + '</span>';
+        continue;
+      }
       const data = await r.json();
       if (data.ok) { ok++; } else { fail++; }
-    } catch(e) { fail++; }
+    } catch(e) { fail++; console.error('Upload exception:', e); }
   }
 
   statusEl.innerHTML = `<span style="color:var(--green)">${ok} uploaded</span> ${fail ? `<span style="color:var(--red)">${fail} gagal</span>` : ''}`;
